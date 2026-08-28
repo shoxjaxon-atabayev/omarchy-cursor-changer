@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "community.shoxjaxon.cursor-changer",
+  "name": "Cursor Changer",
+  "version": "1.0.0",
+  "author": "shoxjaxon",
+  "license": "MIT",
+  "description": "Discover, preview, and apply installed XCursor themes with one Apply action",
+  "kinds": [
+    "overlay"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "Main.qml"
+  }
+}

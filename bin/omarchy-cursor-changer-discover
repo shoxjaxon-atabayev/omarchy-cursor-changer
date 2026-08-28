@@ -1,0 +1,62 @@
+#!/bin/bash
+
+# Discover installed XCursor themes.
+#
+# Scans XDG icon directories (~/.icons, $XDG_DATA_HOME/icons, each
+# $XDG_DATA_DIRS/icons entry) for directories that are real cursor themes
+# (a cursors/ subdir with at least one entry), reads each theme's declared
+# Name= when index.theme exists, deduplicates by that name (user paths win
+# over system paths), and prints a deterministically sorted JSON array.
+#
+# Usage: omarchy-cursor-changer-discover
+
+set -euo pipefail
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+source "$ROOT/lib/common.sh"
+
+declare -A seen_names
+
+rows=()
+while IFS=$'\t' read -r path source; do
+  [[ -d $path ]] || continue
+
+  for dir in "$path"/*/; do
+    [[ -d $dir ]] || continue
+    dir=${dir%/}
+
+    ccx_has_cursors "$dir" || continue
+
+    name=$(ccx_theme_name_from_index "$dir/index.theme")
+    has_index_theme="false"
+    [[ -f "$dir/index.theme" ]] && has_index_theme="true"
+    [[ -n $name ]] || name=${dir##*/}
+
+    # First occurrence wins: search paths are already walked in priority
+    # order (user before system), so this is how "user theme > system theme"
+    # dedup is enforced.
+    [[ -n ${seen_names[$name]:-} ]] && continue
+    seen_names[$name]=1
+
+    rows+=("$(jq -cn \
+      --arg id "$name" \
+      --arg name "$name" \
+      --arg dir "$dir" \
+      --arg source "$source" \
+      --argjson hasIndexTheme "$has_index_theme" \
+      '{id: $id, name: $name, dir: $dir, source: $source, hasIndexTheme: $hasIndexTheme}')")
+  done
+done < <(ccx_search_paths)
+
+if (( ${#rows[@]} == 0 )); then
+  echo "[]"
+  exit 0
+fi
+
+# Deterministic ordering: user-installed themes before system themes, then
+# alphabetical by name. "Active theme first" is layered on top of this by the
+# UI/state layer, which knows what's currently applied; discovery itself has
+# no opinion on that.
+printf '%s\n' "${rows[@]}" | jq -s '
+  sort_by([(if .source == "user" then 0 else 1 end), (.name | ascii_downcase)])
+'
