@@ -86,7 +86,10 @@ ccx_sandbox_setup() {
 }
 
 ccx_sandbox_teardown() {
+  # Runs from an EXIT trap: its own exit status would otherwise silently
+  # replace the script's real exit code, so always return success.
   [[ -n $ccx_sandbox_dir && -d $ccx_sandbox_dir ]] && rm -rf "$ccx_sandbox_dir"
+  return 0
 }
 
 trap ccx_sandbox_teardown EXIT
