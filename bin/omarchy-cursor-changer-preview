@@ -1,0 +1,78 @@
+#!/bin/bash
+
+# Produce a cached preview PNG for a cursor theme, generating it lazily on
+# first request and reusing the cached file afterwards. The cache key is
+# derived from the theme's identity plus the size/mtime of every cursor
+# file that actually feeds the render, so editing cursor files in place
+# (not just replacing the whole theme) still invalidates it — with no
+# database, and no user-visible cache management.
+#
+# Usage: omarchy-cursor-changer-preview <theme-name-or-directory>
+#
+# Prints the absolute path to the (possibly freshly generated) PNG.
+
+set -euo pipefail
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+source "$ROOT/lib/common.sh"
+
+wanted="${1:-}"
+if [[ -z $wanted ]]; then
+  echo "Usage: omarchy-cursor-changer-preview <theme-name-or-directory>" >&2
+  exit 1
+fi
+
+dir="$wanted"
+if [[ $wanted != /* || ! -d $wanted ]]; then
+  dir=$(ccx_resolve_theme_dir "$wanted")
+fi
+if [[ -z $dir || ! -d $dir ]]; then
+  echo "omarchy-cursor-changer-preview: theme not found: $wanted" >&2
+  exit 1
+fi
+
+resolved=$("$ROOT/omarchy-cursor-changer-resolve" "$dir")
+name=$(jq -r '.name' <<<"$resolved")
+roles_json=$(jq -c '.roles' <<<"$resolved")
+
+if [[ $roles_json == "{}" || $roles_json == "null" ]]; then
+  echo "omarchy-cursor-changer-preview: no resolvable cursor roles for: $dir" >&2
+  exit 1
+fi
+
+# Cache key: theme name + a stat fingerprint of every distinct file the
+# render actually reads (fallback roles commonly repeat the same file, so
+# dedupe before stat'ing). Deliberately not the theme directory path itself
+# — the rendered pixels are fully determined by which files get read and
+# their content, not by where the theme happens to live on disk, so two
+# identical theme installs at different paths correctly share one cache
+# entry instead of rendering twice.
+fingerprint="$name"
+while IFS= read -r path; do
+  [[ -n $path ]] || continue
+  real=$(realpath -- "$path" 2>/dev/null) || continue
+  stat_info=$(stat -c '%s %Y' -- "$real" 2>/dev/null) || continue
+  fingerprint+="|$real:$stat_info"
+done < <(jq -r '.[]' <<<"$roles_json" | sort -u)
+
+cache_key=$(printf '%s' "$fingerprint" | sha256sum | cut -d' ' -f1)
+cache_dir="$CCX_CACHE_HOME/previews"
+cache_path="$cache_dir/$cache_key.png"
+
+if [[ -f $cache_path ]]; then
+  printf '%s\n' "$cache_path"
+  exit 0
+fi
+
+mkdir -p "$cache_dir"
+tmp_path="$cache_dir/.tmp.$cache_key.$$.png"
+trap 'rm -f "$tmp_path"' EXIT
+
+if ! python3 "$ROOT/lib/xcursor_preview.py" "$roles_json" "$tmp_path"; then
+  echo "omarchy-cursor-changer-preview: failed to render preview for: $name" >&2
+  exit 1
+fi
+
+mv -f "$tmp_path" "$cache_path"
+trap - EXIT
+printf '%s\n' "$cache_path"
