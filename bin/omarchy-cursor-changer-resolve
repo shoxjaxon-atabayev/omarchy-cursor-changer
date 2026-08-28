@@ -1,0 +1,66 @@
+#!/bin/bash
+
+# Resolve a cursor theme's metadata: declared name, Inherits= chain (with
+# circular-inheritance protection), and a role -> cursor-file map built by
+# walking the theme itself before its ancestors, trying several filename
+# aliases per role.
+#
+# Usage: omarchy-cursor-changer-resolve <theme-directory>
+
+set -euo pipefail
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+source "$ROOT/lib/common.sh"
+
+dir="${1:-}"
+if [[ -z $dir || ! -d $dir ]]; then
+  echo "Usage: omarchy-cursor-changer-resolve <theme-directory>" >&2
+  exit 1
+fi
+dir=${dir%/}
+
+name=$(ccx_theme_name_from_index "$dir/index.theme")
+[[ -n $name ]] || name=${dir##*/}
+
+inherits_raw=$(ccx_theme_inherits_from_index "$dir/index.theme")
+inherits_json="[]"
+if [[ -n $inherits_raw ]]; then
+  IFS=',' read -r -a inherits_arr <<<"$inherits_raw"
+  inherits_json=$(printf '%s\n' "${inherits_arr[@]}" | jq -R . | jq -s .)
+fi
+
+mapfile -t chain < <(ccx_resolve_inheritance_chain "$dir")
+chain_json=$(printf '%s\n' "${chain[@]}" | jq -R . | jq -s .)
+
+roles_json="{}"
+missing=()
+for role in $(ccx_role_names); do
+  resolved=$(ccx_resolve_role "$role" "${chain[@]}")
+  if [[ -n $resolved ]]; then
+    roles_json=$(jq --arg k "$role" --arg v "$resolved" '. + {($k): $v}' <<<"$roles_json")
+  else
+    missing+=("$role")
+  fi
+done
+
+# Missing-role fallback: if the theme resolves *any* cursor at all, point
+# every unresolved role at the theme's own pointer cursor (or, failing
+# that, whatever role did resolve) rather than leaving a blank slot.
+if (( ${#missing[@]} > 0 )); then
+  fallback=$(jq -r '.pointer // (to_entries | .[0].value // empty)' <<<"$roles_json")
+  if [[ -n $fallback ]]; then
+    for role in "${missing[@]}"; do
+      roles_json=$(jq --arg k "$role" --arg v "$fallback" '. + {($k): $v}' <<<"$roles_json")
+    done
+  fi
+fi
+missing_json=$(printf '%s\n' "${missing[@]:-}" | jq -R 'select(length > 0)' | jq -s .)
+
+jq -n \
+  --arg dir "$dir" \
+  --arg name "$name" \
+  --argjson inherits "$inherits_json" \
+  --argjson searchChain "$chain_json" \
+  --argjson roles "$roles_json" \
+  --argjson missingRoles "$missing_json" \
+  '{dir: $dir, name: $name, inherits: $inherits, searchChain: $searchChain, roles: $roles, missingRoles: $missingRoles}'
