@@ -1,0 +1,47 @@
+#!/bin/bash
+# Test double for gsettings. Backs org.gnome.desktop.interface with a flat
+# key=value store under $CCX_TEST_LOG so tests can assert on it, without
+# ever touching the real dconf database.
+#
+# CCX_TEST_GSETTINGS_SET_FAIL=1        makes every `set` call fail.
+# CCX_TEST_GSETTINGS_VERIFY_MISMATCH=x makes `get cursor-theme` always
+#                                       report 'x', regardless of the store
+#                                       (simulates a verification failure
+#                                       that isn't a simple set failure).
+
+log_dir="${CCX_TEST_LOG:?CCX_TEST_LOG must be set}"
+mkdir -p "$log_dir"
+store="$log_dir/gsettings.store"
+touch "$store"
+echo "$*" >>"$log_dir/gsettings.calls"
+
+action="$1" schema="$2" key="$3" value="${4:-}"
+
+case "$action" in
+  get)
+    if [[ $key == cursor-theme && -n ${CCX_TEST_GSETTINGS_VERIFY_MISMATCH:-} ]]; then
+      printf "'%s'\n" "$CCX_TEST_GSETTINGS_VERIFY_MISMATCH"
+      exit 0
+    fi
+    stored=$(grep "^$key=" "$store" 2>/dev/null | tail -n1 | cut -d= -f2-)
+    if [[ $key == cursor-theme ]]; then
+      printf "'%s'\n" "${stored:-default}"
+    else
+      printf '%s\n' "${stored:-24}"
+    fi
+    ;;
+  set)
+    if [[ -n ${CCX_TEST_GSETTINGS_SET_FAIL:-} ]]; then
+      echo "fake gsettings: simulated failure" >&2
+      exit 1
+    fi
+    grep -v "^$key=" "$store" >"$store.tmp" 2>/dev/null
+    mv "$store.tmp" "$store"
+    echo "$key=$value" >>"$store"
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+
+exit 0

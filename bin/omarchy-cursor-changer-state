@@ -1,0 +1,44 @@
+#!/bin/bash
+
+# Print the plugin's current state: what it last applied (its own
+# persisted source of truth) cross-referenced with what GTK/Qt currently
+# see via gsettings. Never fails loudly — a missing or corrupted state file
+# is reported as {"hasState": false, ...}, not an error, since "nothing has
+# been applied yet" and "the state file got corrupted" are both ordinary
+# situations the UI must be able to render (empty/first-run state, §25).
+#
+# Usage: omarchy-cursor-changer-state
+
+set -uo pipefail
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+source "$ROOT/lib/common.sh"
+
+gsettings_theme=""
+if command -v gsettings >/dev/null && [[ -n ${DBUS_SESSION_BUS_ADDRESS:-} || -n ${WAYLAND_DISPLAY:-} ]]; then
+  raw=$(gsettings get org.gnome.desktop.interface cursor-theme 2>/dev/null) || raw=""
+  gsettings_theme=${raw#\'}
+  gsettings_theme=${gsettings_theme%\'}
+fi
+
+state_json="null"
+has_state="false"
+if [[ -f $CCX_STATE_FILE ]] && jq -e . "$CCX_STATE_FILE" >/dev/null 2>&1; then
+  state_json=$(cat "$CCX_STATE_FILE")
+  has_state="true"
+fi
+
+jq -n \
+  --argjson hasState "$has_state" \
+  --argjson state "$state_json" \
+  --arg gsettingsTheme "$gsettings_theme" \
+  '
+  {
+    hasState: $hasState,
+    theme: (if $hasState then $state.theme else null end),
+    dir: (if $hasState then $state.dir else null end),
+    size: (if $hasState then $state.size else null end),
+    appliedAt: (if $hasState then $state.appliedAt else null end),
+    gsettingsTheme: (if $gsettingsTheme == "" then null else $gsettingsTheme end)
+  }
+  '

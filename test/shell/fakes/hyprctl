@@ -1,0 +1,19 @@
+#!/bin/bash
+# Test double for hyprctl. Records every call and simulates setcursor's
+# effect on a flat file so tests can assert on it, without ever touching a
+# real Hyprland session.
+
+log_dir="${CCX_TEST_LOG:?CCX_TEST_LOG must be set}"
+mkdir -p "$log_dir"
+echo "$*" >>"$log_dir/hyprctl.calls"
+
+if [[ -n ${CCX_TEST_HYPRCTL_FAIL:-} ]]; then
+  echo "fake hyprctl: simulated failure" >&2
+  exit 1
+fi
+
+if [[ $1 == setcursor ]]; then
+  printf '%s %s\n' "$2" "$3" >"$log_dir/hyprctl.cursor"
+fi
+
+exit 0

@@ -1,0 +1,32 @@
+#!/bin/bash
+
+# Omarchy post-boot hook: reapply the last cursor theme this plugin applied.
+#
+# hyprctl setcursor is session-scoped (it tells the running compositor to
+# render a theme; it is not a persistent Hyprland config option), so it has
+# to be reissued once each time Hyprland starts. gsettings, by contrast,
+# already persists on its own via dconf and needs no help here.
+#
+# Installed by omarchy-cursor-changer-apply into
+# ~/.config/omarchy/hooks/post-boot.d/, and run by omarchy-hook a couple of
+# seconds after the desktop starts (see default/hypr/autostart.lua). This
+# script is intentionally self-contained (no sourcing of the plugin's own
+# lib/) so it keeps working even if the plugin is later disabled or moved.
+#
+# Must never fail loudly or hold up the rest of the post-boot hook chain:
+# a missing/corrupt state file or a missing hyprctl are quiet no-ops.
+
+state_file="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/cursor-changer/state.json"
+
+[[ -f $state_file ]] || exit 0
+command -v jq >/dev/null || exit 0
+jq -e . "$state_file" >/dev/null 2>&1 || exit 0
+
+theme=$(jq -r '.theme // empty' "$state_file" 2>/dev/null)
+size=$(jq -r '.size // empty' "$state_file" 2>/dev/null)
+[[ -n $theme && $size =~ ^[0-9]+$ ]] || exit 0
+
+command -v hyprctl >/dev/null || exit 0
+hyprctl setcursor "$theme" "$size" >/dev/null 2>&1 || true
+
+exit 0

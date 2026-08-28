@@ -1,0 +1,162 @@
+#!/bin/bash
+
+# Safely apply a cursor theme system-wide.
+#
+#   1. Capture the previous state (for rollback).
+#   2. Validate the requested theme (must resolve to a real cursor theme).
+#   3. Apply it to Hyprland's live cursor:  hyprctl setcursor <name> <size>
+#   4. Apply it to GTK/Qt:                  gsettings set ... cursor-theme
+#   5. Verify (re-read gsettings and compare).
+#   6. Persist the plugin's own state file (source of truth for the UI).
+#   7. Ensure the post-boot reapply hook is installed.
+#   8. On any failure after step 3, roll back what was already changed and
+#      exit non-zero without persisting anything.
+#
+# Never requires sudo/root. Applying the same theme repeatedly is a no-op
+# in effect (every step here is naturally idempotent).
+#
+# Usage: omarchy-cursor-changer-apply <theme-name-or-directory>
+
+set -uo pipefail
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+source "$ROOT/lib/common.sh"
+
+fail() {
+  echo "omarchy-cursor-changer-apply: $*" >&2
+  exit 1
+}
+
+wanted="${1:-}"
+[[ -n $wanted ]] || fail "Usage: omarchy-cursor-changer-apply <theme-name-or-directory>"
+
+gsettings_available() {
+  command -v gsettings >/dev/null && [[ -n ${DBUS_SESSION_BUS_ADDRESS:-} || -n ${WAYLAND_DISPLAY:-} ]]
+}
+
+current_gsettings_theme() {
+  local raw
+  raw=$(gsettings get org.gnome.desktop.interface cursor-theme 2>/dev/null) || { echo ""; return; }
+  raw=${raw#\'}
+  raw=${raw%\'}
+  echo "$raw"
+}
+
+current_gsettings_size() {
+  gsettings get org.gnome.desktop.interface cursor-size 2>/dev/null || echo ""
+}
+
+# --- serialize concurrent applies (mirrors omarchy-theme-set's flock use) -
+mkdir -p "$(dirname "$CCX_LOCK_FILE")" 2>/dev/null || true
+exec 9>"$CCX_LOCK_FILE"
+flock 9
+
+# --- step 1: capture previous state ---------------------------------------
+old_theme=""
+old_size="$CCX_DEFAULT_SIZE"
+if [[ -f $CCX_STATE_FILE ]] && jq -e . "$CCX_STATE_FILE" >/dev/null 2>&1; then
+  old_theme=$(jq -r '.theme // ""' "$CCX_STATE_FILE")
+  old_size=$(jq -r '.size // empty' "$CCX_STATE_FILE")
+  [[ -n $old_size ]] || old_size="$CCX_DEFAULT_SIZE"
+fi
+
+have_gsettings=0
+old_gsettings_theme=""
+old_gsettings_size="$old_size"
+if gsettings_available; then
+  have_gsettings=1
+  old_gsettings_theme=$(current_gsettings_theme)
+  raw_size=$(current_gsettings_size)
+  [[ $raw_size =~ ^[0-9]+$ ]] && old_gsettings_size="$raw_size"
+fi
+
+# Size is not user-configurable by this plugin (cursor size editing is
+# explicitly out of scope) — preserve whatever size is already in effect.
+size="$old_size"
+[[ $size =~ ^[0-9]+$ ]] || size="$CCX_DEFAULT_SIZE"
+
+# --- step 2: validate the requested theme ---------------------------------
+dir="$wanted"
+if [[ $wanted != /* || ! -d $wanted ]]; then
+  dir=$(ccx_resolve_theme_dir "$wanted")
+fi
+[[ -n $dir && -d $dir ]] || fail "theme not found: $wanted"
+ccx_has_cursors "$dir" || fail "not a valid cursor theme (no cursors/): $dir"
+
+resolved=$("$ROOT/omarchy-cursor-changer-resolve" "$dir") || fail "failed to resolve theme metadata: $dir"
+name=$(jq -r '.name' <<<"$resolved")
+role_count=$(jq -r '.roles | length' <<<"$resolved")
+(( role_count > 0 )) || fail "theme has no resolvable cursor roles: $name"
+
+# Only roll back what this run actually changed — a hyprctl failure, for
+# instance, must never trigger a gsettings write that was never otherwise
+# going to happen.
+hyprctl_applied=0
+gsettings_applied=0
+
+rollback() {
+  echo "omarchy-cursor-changer-apply: rolling back to previous state" >&2
+  if (( gsettings_applied )) && [[ -n $old_gsettings_theme ]]; then
+    gsettings set org.gnome.desktop.interface cursor-theme "$old_gsettings_theme" 2>/dev/null || true
+    gsettings set org.gnome.desktop.interface cursor-size "$old_gsettings_size" 2>/dev/null || true
+  fi
+  if (( hyprctl_applied )) && [[ -n $old_theme ]]; then
+    hyprctl setcursor "$old_theme" "$old_size" >/dev/null 2>&1 || true
+  fi
+}
+
+# --- step 3: apply to Hyprland's live cursor ------------------------------
+if ! command -v hyprctl >/dev/null; then
+  fail "hyprctl not found; is this running inside an Omarchy/Hyprland session?"
+fi
+if ! hyprctl setcursor "$name" "$size" >/dev/null 2>&1; then
+  fail "hyprctl setcursor failed for theme: $name"
+fi
+hyprctl_applied=1
+
+# --- step 4: apply to GTK/Qt via gsettings --------------------------------
+if (( have_gsettings )); then
+  if ! gsettings set org.gnome.desktop.interface cursor-theme "$name" 2>/dev/null ||
+     ! gsettings set org.gnome.desktop.interface cursor-size "$size" 2>/dev/null; then
+    rollback
+    fail "gsettings failed to apply theme: $name"
+  fi
+  gsettings_applied=1
+fi
+
+# --- step 5: verify --------------------------------------------------------
+if (( have_gsettings )); then
+  verified=$(current_gsettings_theme)
+  if [[ $verified != "$name" ]]; then
+    rollback
+    fail "verification failed: gsettings reports '$verified', expected '$name'"
+  fi
+fi
+
+# --- step 6: persist plugin state (atomic write) --------------------------
+mkdir -p "$CCX_STATE_HOME"
+tmp_state="$CCX_STATE_HOME/.state.json.tmp.$$"
+applied_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+jq -n \
+  --arg theme "$name" \
+  --arg dir "$dir" \
+  --argjson size "$size" \
+  --arg appliedAt "$applied_at" \
+  '{theme: $theme, dir: $dir, size: $size, appliedAt: $appliedAt}' \
+  >"$tmp_state"
+mv -f "$tmp_state" "$CCX_STATE_FILE"
+
+# --- step 7: ensure the post-boot reapply hook is installed ---------------
+hook_src="$ROOT/omarchy-cursor-changer-reapply.hook"
+hook_dst="$HOME/.config/omarchy/hooks/post-boot.d/omarchy-cursor-changer-reapply.hook"
+if [[ -f $hook_src ]] && ! cmp -s "$hook_src" "$hook_dst" 2>/dev/null; then
+  if command -v omarchy-hook-install >/dev/null; then
+    omarchy-hook-install post-boot "$hook_src" >/dev/null 2>&1 || true
+  else
+    mkdir -p "$(dirname "$hook_dst")"
+    cp "$hook_src" "$hook_dst" 2>/dev/null && chmod 755 "$hook_dst" || true
+  fi
+fi
+
+jq -n --arg theme "$name" --arg dir "$dir" --argjson size "$size" \
+  '{applied: true, theme: $theme, dir: $dir, size: $size}'
