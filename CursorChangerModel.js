@@ -33,7 +33,7 @@ function parseJsonArray(text) {
 function parseJsonObject(text) {
   try {
     var parsed = JSON.parse(text || "{}")
-    return (parsed && typeof parsed === "object") ? parsed : {}
+    return (parsed && typeof parsed === "object" && !Array.isArray(parsed)) ? parsed : {}
   } catch (e) {
     return {}
   }
@@ -46,4 +46,17 @@ function columnsForWidth(width) {
   if (width >= 760) return 4
   if (width >= 560) return 3
   return 2
+}
+
+// QML's JS engine has no `module` global, so this is a no-op there; Node
+// (used only by test/shell/model-test.sh) picks it up to test these pure
+// functions directly, the same dual-use pattern already used elsewhere for
+// plugin JS in this ecosystem.
+if (typeof module !== "undefined") {
+  module.exports = {
+    sortThemes: sortThemes,
+    parseJsonArray: parseJsonArray,
+    parseJsonObject: parseJsonObject,
+    columnsForWidth: columnsForWidth
+  }
 }
