@@ -16,4 +16,8 @@ if [[ $1 == setcursor ]]; then
   printf '%s %s\n' "$2" "$3" >"$log_dir/hyprctl.cursor"
 fi
 
+if [[ $1 == cursorpos ]]; then
+  printf '%s\n' "${CCX_TEST_CURSORPOS:-1234, 567}"
+fi
+
 exit 0

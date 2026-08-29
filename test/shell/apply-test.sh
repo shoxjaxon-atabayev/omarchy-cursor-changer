@@ -42,6 +42,11 @@ assert_equal "$(jq -r '.theme' "$STATE_FILE")" "ThemeA" "state file records the 
 hook_dst="$HOME/.config/omarchy/hooks/post-boot.d/omarchy-cursor-changer-reapply.hook"
 [[ -x $hook_dst ]] && pass "post-boot reapply hook is installed and executable" ||
   fail "post-boot reapply hook is installed and executable"
+grep -q "^cursorpos$" "$CCX_TEST_LOG/hyprctl.calls" && pass "a successful apply queries the current cursor position for the redraw nudge" ||
+  fail "a successful apply queries the current cursor position for the redraw nudge"
+grep -q "^dispatch hl.dsp.cursor.move({x = 1234, y = 567})$" "$CCX_TEST_LOG/hyprctl.calls" &&
+  pass "the redraw nudge dispatches a move to the cursor's own current position (no visible displacement)" ||
+  fail "the redraw nudge dispatches a move to the cursor's own current position (no visible displacement)"
 
 # --- same theme applied again is idempotent -------------------------------
 reset_fake_log

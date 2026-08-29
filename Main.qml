@@ -209,6 +209,11 @@ Item {
     function checkFinished() {
       if (exited && stdoutFinished && stderrFinished) {
         root.isImporting = false
+        // The overlay was hidden (not just backgrounded) so the file-picker
+        // dialog could actually be seen and used; restore it and re-grab
+        // keyboard focus now that the dialog is gone.
+        root.focusZone = "import"
+        Qt.callLater(function() { if (root.opened && !root.isImporting) keyCatcher.forceActiveFocus() })
         if (finalExitCode === 0) {
           var result = Model.parseJsonObject(stdoutText)
           if (result.imported) {
@@ -300,7 +305,13 @@ Item {
 
   PanelWindow {
     id: panel
-    visible: root.opened
+    // Hidden (not just backgrounded) while a file-chooser dialog is up: this
+    // surface sits on WlrLayer.Overlay with exclusive keyboard focus, which
+    // is the topmost compositor layer — a normal application window (the
+    // desktop portal's file picker, spawned by Import…) renders *below* it,
+    // so leaving this visible made the picker completely unreachable behind
+    // an opaque scrim the user couldn't see past or click through.
+    visible: root.opened && !root.isImporting
     anchors { top: true; bottom: true; left: true; right: true }
     color: "transparent"
     WlrLayershell.namespace: "omarchy-cursor-changer"
