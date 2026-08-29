@@ -6,26 +6,27 @@ A minimal, native Omarchy plugin for discovering, previewing, and applying insta
 
 It is not a cursor editor and does not create, download, or modify cursor themes — it manages the ones already installed on your system.
 
+![omarchy-cursor-changer overlay showing a grid of real cursor theme previews](preview.png)
+
+## Quick start
+
+Install:
+
+```bash
+omarchy plugin add https://github.com/shoxjaxon-atabayev/omarchy-cursor-changer.git --enable
+```
+
+Open it:
+
+```bash
+omarchy-shell shell toggle community.shoxjaxon.cursor-changer
+```
+
+That's it — pick a theme, hit **Apply**. See [Usage](#usage) below for keybinding it and the full keyboard/mouse reference.
+
 ## What it does
 
 Open the plugin and it scans your system for installed XCursor themes (real cursor themes — not icon themes), renders a real preview of each one directly from its actual cursor bitmaps, and shows them in a grid alongside whichever theme is currently active. Pick a different one, hit **Apply**, and it's applied across Hyprland and your GTK/Qt apps. Nothing on your system changes until you click Apply — selecting a card is always non-destructive.
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  Cursor                                                  │
-│  Choose a cursor style for your desktop                  │
-│                                                           │
-│  ┌────────────────────┐  ┌────────────────────┐          │
-│  │  ↖  I  ⌛ ↔  ✋      │  │  ↖  I  ⌛ ↔  ✋      │          │
-│  │   Adwaita           │  │   Yaru               │        │
-│  │   ● Active          │  │                       │       │
-│  └────────────────────┘  └────────────────────┘          │
-│                                                           │
-│                                     [ Cancel ]  [ Apply ] │
-└─────────────────────────────────────────────────────────┘
-```
-
-(The preview strips above are drawn from real, actual pixel data extracted from each theme's XCursor files — not the arrows shown in this ASCII mockup.)
 
 ## Installation
 
@@ -35,7 +36,7 @@ omarchy-shell shell rescanPlugins
 omarchy plugin enable community.shoxjaxon.cursor-changer
 ```
 
-Or, from within Omarchy:
+Or, in one step (same as [Quick start](#quick-start)):
 
 ```bash
 omarchy plugin add https://github.com/shoxjaxon-atabayev/omarchy-cursor-changer.git --enable
@@ -72,6 +73,7 @@ Inside the overlay:
 | **Apply** | Applies the selected theme system-wide. Disabled when the selection matches what's already active. |
 | **Cancel** | Same as Escape. |
 | **Import…** | Pick a cursor theme you've already downloaded (a folder or a `.tar.gz`/`.tar.xz`/`.tar.bz2`/`.zip` archive) and add it to `~/.local/share/icons` — see [Importing a downloaded cursor pack](#importing-a-downloaded-cursor-pack). |
+| **Delete** | Shown only on themes you added yourself (never on system themes, never on the currently-active theme). Asks for confirmation, then removes the theme directory. |
 
 The whole overlay is driven from a single keyboard-focus owner (there is deliberately no native per-widget Tab chain), specifically so `Escape` always works regardless of which control the keyboard cursor is currently on.
 
