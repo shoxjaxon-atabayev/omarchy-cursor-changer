@@ -136,19 +136,26 @@ fi
 # Hyprland has a known, currently-accepted behavior where the compositor's
 # own rendered pointer only redraws on the next pointer-shape re-evaluation
 # rather than immediately on `hyprctl setcursor` (hyprwm/Hyprland#4221) — a
-# rendering quirk, not a sign the apply above failed. A move-to-its-own
-# current-position dispatch is enough to trigger that re-evaluation without
-# actually displacing the pointer (verified: cursorpos is identical before
-# and after). Best-effort only: hyprctl's dispatcher syntax is Omarchy's own
+# rendering quirk, not a sign the apply above failed. A dispatched move to
+# the pointer's own exact current position was tried first and confirmed
+# (against real user testing) not to be enough — compositors commonly
+# short-circuit a zero-delta motion before it reaches whatever code path
+# re-evaluates the cursor shape/surface, so nothing dispatched, nothing to
+# redraw. This moves the pointer by a real 1px offset and immediately back,
+# which cannot be optimized away as a no-op the same way: two distinct
+# positions, each dispatched. 1px is not humanly perceptible as a jump.
+# Best-effort only: hyprctl's dispatcher syntax here is Omarchy's own
 # Lua-based one (`hl.dsp.cursor.move({x=.., y=..})`, confirmed against
 # /usr/share/hypr/stubs/hl.meta.lua on this system), which is not something
 # to depend on for the apply itself succeeding or failing.
 nudge_cursor_redraw() {
-  local pos x y
+  local pos x y nudged_x
   pos=$(hyprctl cursorpos 2>/dev/null) || return 0
   x=$(cut -d',' -f1 <<<"$pos" | tr -d ' ')
   y=$(cut -d',' -f2 <<<"$pos" | tr -d ' ')
   [[ $x =~ ^-?[0-9]+$ && $y =~ ^-?[0-9]+$ ]] || return 0
+  nudged_x=$((x > 0 ? x - 1 : x + 1))
+  hyprctl dispatch "hl.dsp.cursor.move({x = $nudged_x, y = $y})" >/dev/null 2>&1 || true
   hyprctl dispatch "hl.dsp.cursor.move({x = $x, y = $y})" >/dev/null 2>&1 || true
 }
 nudge_cursor_redraw
