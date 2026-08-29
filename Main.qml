@@ -27,6 +27,10 @@ Item {
   property bool applySuccess: false
   property bool isImporting: false
   property string importError: ""
+  property string deleteConfirmId: ""
+  property string deleteConfirmName: ""
+  property bool isDeleting: false
+  property string deleteError: ""
 
   // Keyboard "cursor": which logical control (the grid, Cancel, or Apply)
   // reacts to Enter/Space right now. keyCatcher below is the *only* item
@@ -66,6 +70,7 @@ Item {
     root.applyError = ""
     root.applySuccess = false
     root.importError = ""
+    root.deleteError = ""
     root.focusZone = "grid"
     refreshState()
     if (!root.themesLoaded) discoverProc.running = true
@@ -104,6 +109,24 @@ Item {
     root.importError = ""
     importProc.command = [root.binPath("omarchy-cursor-changer-import-pick")]
     importProc.running = true
+  }
+
+  function requestDelete(id, name) {
+    if (root.isDeleting) return
+    root.deleteConfirmId = id
+    root.deleteConfirmName = name
+  }
+
+  function cancelDelete() {
+    root.deleteConfirmId = ""
+    root.deleteConfirmName = ""
+  }
+
+  function confirmDeleteNow() {
+    if (root.isDeleting || root.deleteConfirmId === "") return
+    root.isDeleting = true
+    deleteProc.command = [root.binPath("omarchy-cursor-changer-delete"), root.deleteConfirmId]
+    deleteProc.running = true
   }
 
   function applySelected() {
@@ -258,6 +281,48 @@ Item {
   }
 
   Process {
+    id: deleteProc
+    property bool exited: false
+    property bool stderrFinished: false
+    property int finalExitCode: -1
+    property string stderrText: ""
+
+    function checkFinished() {
+      if (exited && stderrFinished) {
+        root.isDeleting = false
+        var deletedId = root.deleteConfirmId
+        root.cancelDelete()
+        if (finalExitCode === 0) {
+          if (root.selectedThemeId === deletedId) root.selectedThemeId = root.activeThemeId
+          root.themesLoaded = false
+          discoverProc.running = true
+        } else {
+          root.deleteError = "Couldn't delete cursor theme: " + stderrText.trim().split("\n").pop()
+          console.warn("omarchy-cursor-changer: delete failed:", stderrText)
+        }
+      }
+    }
+
+    onRunningChanged: if (running) {
+      exited = false; stderrFinished = false; finalExitCode = -1; stderrText = ""
+    }
+    stdout: StdioCollector {}
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        deleteProc.stderrText = text
+        deleteProc.stderrFinished = true
+        deleteProc.checkFinished()
+      }
+    }
+    onExited: function(exitCode) {
+      deleteProc.finalExitCode = exitCode
+      deleteProc.exited = true
+      deleteProc.checkFinished()
+    }
+  }
+
+  Process {
     id: applyProc
     property bool exited: false
     property bool stderrFinished: false
@@ -348,6 +413,10 @@ Item {
         focus: true
         Keys.priority: Keys.BeforeItem
         Keys.onPressed: function(event) {
+          if (root.deleteConfirmId !== "") {
+            if (deleteConfirm.handleKey(event)) event.accepted = true
+            return
+          }
           if (event.key === Qt.Key_Escape) {
             root.cancel()
             event.accepted = true
@@ -500,7 +569,11 @@ Item {
             anchors.fill: parent
             clip: true
             cellWidth: width / Model.columnsForWidth(width)
-            cellHeight: Style.space(168)
+            // Tight enough to fit its content (preview + name + active/
+            // selected row + the always-reserved delete row) without the
+            // large dead space a taller fixed height used to leave at the
+            // bottom of every card.
+            cellHeight: Style.space(148)
             model: root.sortedThemes
             currentIndex: 0
             highlight: null
@@ -519,19 +592,40 @@ Item {
                 active: modelData.id === root.activeThemeId
                 selected: modelData.id === root.selectedThemeId
                 highlighted: index === gridView.currentIndex && root.focusZone === "grid"
+                deletable: modelData.source === "user"
                 onActivated: {
                   gridView.currentIndex = index
                   root.focusZone = "grid"
                   root.selectTheme(modelData.id)
                 }
+                onDeleteRequested: root.requestDelete(modelData.id, modelData.name)
               }
             }
+          }
+
+          ConfirmDialog {
+            id: deleteConfirm
+            anchors.fill: parent
+            opened: root.deleteConfirmId !== ""
+            z: 10
+            message: "Delete “" + root.deleteConfirmName + "”? This cannot be undone."
+            confirmText: root.isDeleting ? "Deleting…" : "Delete"
+            background: Color.menu.background
+            foreground: Color.menu.text
+            scrim: Color.menu.scrim
+            selectedBackground: Style.selectedFill
+            selectedText: Color.accent
+            fontFamily: Style.font.family
+            cornerRadius: Style.cornerRadius
+            onCanceled: root.cancelDelete()
+            onConfirmed: root.confirmDeleteNow()
           }
         }
 
         Text {
           id: errorText
-          readonly property string message: root.applyError !== "" ? root.applyError : root.importError
+          readonly property string message: root.applyError !== "" ? root.applyError
+            : root.importError !== "" ? root.importError : root.deleteError
           visible: message !== ""
           width: parent.width
           text: message

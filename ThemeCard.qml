@@ -19,8 +19,12 @@ BorderSurface {
   property bool selected: false
   property bool highlighted: false
   property bool invalid: false
+  // Only ever true for user-installed themes (SPEC: never offer to remove a
+  // system theme, which would need root and isn't this plugin's to touch).
+  property bool deletable: false
 
   signal activated()
+  signal deleteRequested()
 
   readonly property bool hot: mouseArea.containsMouse || root.highlighted
   readonly property color foreground: Color.menu.text
@@ -173,6 +177,33 @@ BorderSurface {
         color: Color.accent
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
+      }
+    }
+
+    // Always reserves this row's height (even when empty) so every card in
+    // the grid stays the same size regardless of whether it happens to be
+    // deletable — the empty space this used to leave unused on every card
+    // is now spent here instead of just sitting blank.
+    Item {
+      width: parent.width
+      height: Style.space(20)
+
+      Text {
+        anchors.centerIn: parent
+        visible: root.deletable && !root.active
+        text: "Delete"
+        color: deleteMouseArea.containsMouse ? Color.urgent : Util.alpha(root.foreground, 0.45)
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+
+        MouseArea {
+          id: deleteMouseArea
+          anchors.fill: parent
+          anchors.margins: -Style.spacing.sm
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: root.deleteRequested()
+        }
       }
     }
   }

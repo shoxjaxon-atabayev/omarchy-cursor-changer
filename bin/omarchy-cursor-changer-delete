@@ -1,0 +1,58 @@
+#!/bin/bash
+
+# Remove a user-installed cursor theme (one under ~/.icons or
+# $XDG_DATA_HOME/icons — never a system theme under /usr/share, which would
+# need root and isn't this plugin's to touch).
+#
+# Usage: omarchy-cursor-changer-delete <theme-name-or-directory>
+
+set -uo pipefail
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+source "$ROOT/lib/common.sh"
+
+fail() {
+  echo "omarchy-cursor-changer-delete: $*" >&2
+  exit 1
+}
+
+wanted="${1:-}"
+[[ -n $wanted ]] || fail "Usage: omarchy-cursor-changer-delete <theme-name-or-directory>"
+
+dir="$wanted"
+if [[ $wanted != /* || ! -d $wanted ]]; then
+  dir=$(ccx_resolve_theme_dir "$wanted")
+fi
+[[ -n $dir && -d $dir ]] || fail "theme not found: $wanted"
+
+# Only ever delete from a user-writable icon directory. Resolve to a real
+# path first so a symlinked theme directory can't be used to point this at
+# somewhere outside those roots.
+real_dir=$(realpath -- "$dir") || fail "could not resolve path: $dir"
+xdg_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+user_root_1=$(realpath -m -- "$HOME/.icons")
+user_root_2=$(realpath -m -- "$xdg_data_home/icons")
+
+case "$real_dir" in
+  "$user_root_1"/*) ;;
+  "$user_root_2"/*) ;;
+  *) fail "refusing to delete a theme outside your user icon directories: $real_dir" ;;
+esac
+[[ $real_dir != "$user_root_1" && $real_dir != "$user_root_2" ]] || fail "refusing to delete an icons root directory"
+
+name=$(ccx_theme_name_from_index "$dir/index.theme")
+[[ -n $name ]] || name=${dir##*/}
+
+# Refuse to delete whatever this plugin currently has applied — deleting it
+# out from under an active theme is exactly the kind of inconsistent state
+# SPEC asks this plugin to avoid. The user can switch to another theme first.
+if [[ -f $CCX_STATE_FILE ]] && jq -e . "$CCX_STATE_FILE" >/dev/null 2>&1; then
+  active_theme=$(jq -r '.theme // ""' "$CCX_STATE_FILE")
+  if [[ -n $active_theme && $active_theme == "$name" ]]; then
+    fail "'$name' is the active cursor theme; apply a different theme before deleting it"
+  fi
+fi
+
+rm -rf -- "$real_dir" || fail "failed to remove: $real_dir"
+
+jq -n --arg name "$name" --arg dir "$real_dir" '{deleted: true, name: $name, dir: $dir}'
