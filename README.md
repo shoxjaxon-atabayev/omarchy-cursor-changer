@@ -64,13 +64,27 @@ Inside the overlay:
 | Action | Result |
 |---|---|
 | Click a card | Selects it locally. Nothing on the system changes yet. |
-| `Tab` / `Shift+Tab` | Move focus between the theme grid, Cancel, and Apply. |
+| `Tab` / `Shift+Tab` | Move the keyboard cursor between Import, the theme grid, Cancel, and Apply. |
 | Arrow keys (grid focused) | Move the highlighted card. |
 | `Enter` / `Space` (grid focused) | Select the highlighted card. |
 | `Enter` (Apply focused) | Apply the selected theme. |
-| `Escape` | Discard any unapplied selection and close. |
+| `Escape` | Discard any unapplied selection and close — works no matter which control currently has the keyboard cursor. |
 | **Apply** | Applies the selected theme system-wide. Disabled when the selection matches what's already active. |
 | **Cancel** | Same as Escape. |
+| **Import…** | Pick a cursor theme you've already downloaded (a folder or a `.tar.gz`/`.tar.xz`/`.tar.bz2`/`.zip` archive) and add it to `~/.local/share/icons` — see [Importing a downloaded cursor pack](#importing-a-downloaded-cursor-pack). |
+
+The whole overlay is driven from a single keyboard-focus owner (there is deliberately no native per-widget Tab chain), specifically so `Escape` always works regardless of which control the keyboard cursor is currently on.
+
+## Importing a downloaded cursor pack
+
+This plugin doesn't search the internet for cursor themes and isn't a marketplace (see `SPEC.md`'s non-goals) — but if you've already downloaded a cursor pack yourself, click **Import…** (top-right of the header, or the equivalent button in the empty state) to pick it from your filesystem via the normal desktop file picker. It accepts:
+
+- a plain folder (a `cursors/` subdirectory, optionally with an `index.theme`), or
+- an archive: `.tar.gz`/`.tgz`, `.tar.xz`, `.tar.bz2`, `.tar`, or `.zip`.
+
+Archives are extracted into an isolated temp directory first — nothing is ever written to `~/.local/share/icons` until the extracted content is confirmed to actually be a cursor theme. Real-world downloaded packs are often wrapped in one or two extra folders (a README/screenshots directory, a version-numbered release folder), so the importer searches a few levels deep for the actual theme rather than assuming it sits at the archive root. If a theme with the same name is already installed, the import is refused rather than silently overwriting it.
+
+You can also skip the plugin entirely and place a theme directly under `~/.local/share/icons/<theme-name>/` (or `~/.icons/<theme-name>/`) yourself — the **Import…** button is a convenience for exactly that, not a new mechanism.
 
 ## Supported cursor themes
 
@@ -89,7 +103,8 @@ Themes that declare cursor roles under different filenames (e.g. `default` vs `l
 ## Known limitations
 
 - **Cursor size is not editable here.** Applying a theme keeps whatever size is already configured (defaulting to 24px if none is set). A cursor size editor is explicitly out of scope — see `SPEC.md`.
-- **Already-running apps may not update their cursor instantly.** Most modern GTK4/Qt6 apps and Hyprland's own compositor-drawn cursor pick up the change immediately (the compositor renders the pointer itself for anything using the `cursor-shape-v1` protocol). A handful of older XWayland or GTK3 apps that cached `XCURSOR_THEME` at their own startup won't refresh until restarted — reopening the app is enough. This is a limitation of the wider XWayland/toolkit ecosystem, not something a plugin can safely work around without restarting your other applications for you.
+- **Already-running apps may not update their cursor instantly.** Apps that support server-side cursor rendering (Qt, Chromium/Electron, and the rest of the Hypr ecosystem) pick up `hyprctl setcursor` immediately. GTK apps specifically do not use server-side cursors and instead need `XCURSOR_THEME` and `gsettings set org.gnome.desktop.interface cursor-theme` — which this plugin sets — but a GTK app that already cached the old theme at its own startup still won't refresh until it's restarted. This is a real, current Hyprland/GTK behavior, not something a plugin can work around without restarting your other applications for you ([Hyprland FAQ](https://wiki.hypr.land/FAQ/)).
+- **The visible pointer sometimes only redraws on the next mouse move.** This is a known, currently-accepted Hyprland behavior, not specific to this plugin — see [hyprwm/Hyprland#4221](https://github.com/hyprwm/Hyprland/issues/4221). If the cursor doesn't look different immediately after Apply, move the mouse; `gsettings get org.gnome.desktop.interface cursor-theme` will already show the new value even before the pointer visually catches up.
 - **Reboot persistence covers the cursor theme, not custom sizes**, and relies on a post-boot hook (see [Architecture](#architecture)) rather than a Hyprland config option, because `hyprctl setcursor` is a live, session-scoped IPC call, not a persistent setting.
 - **No cursor themes found in some minimal installs.** If nothing shows up, install a cursor theme package (e.g. `pacman -S bibata-cursor-theme` or similar for your theme of choice) and reopen the plugin.
 
@@ -109,6 +124,8 @@ Everything filesystem/subprocess-related lives in small, independently runnable,
 | `bin/omarchy-cursor-changer-preview` | Wraps the above with a content-fingerprinted cache under `~/.cache/omarchy/cursor-changer/previews/`. |
 | `bin/omarchy-cursor-changer-apply` | Validates the theme, applies it via `hyprctl setcursor` (live Hyprland/XWayland cursor) then `gsettings set org.gnome.desktop.interface cursor-theme`/`cursor-size` (GTK/Qt), verifies the change stuck, persists plugin state, installs the post-boot hook, and rolls back whatever it changed if any step fails. |
 | `bin/omarchy-cursor-changer-state` | Reads back the plugin's own persisted state (never errors on a missing/corrupt file). |
+| `bin/omarchy-cursor-changer-import` | Validates and installs a local theme directory or archive into `~/.local/share/icons` (extraction always goes through an isolated temp directory first). |
+| `bin/omarchy-cursor-changer-import-pick` | Wraps the above with Omarchy's own `omarchy-file-select` desktop file chooser, for the UI's **Import…** button. |
 | `bin/omarchy-cursor-changer-reapply.hook` | Installed into `~/.config/omarchy/hooks/post-boot.d/`; re-issues `hyprctl setcursor` on the next login, since that call is session-scoped and Hyprland has no persistent "default cursor theme" config option of its own. |
 
 **Source of truth:** the plugin's own `~/.local/state/omarchy/cursor-changer/state.json` for "what did this plugin last apply," cross-referenced with `gsettings get org.gnome.desktop.interface cursor-theme` for "what do GTK/Qt currently see." No separate UI-owned database — reopening the plugin always re-derives active/selected state from these two.
@@ -130,6 +147,12 @@ The previous cursor theme is left untouched — the plugin captures the prior st
 
 **The cursor looks right in most apps but not one specific app**
 That app likely cached the old cursor theme at its own startup (see [Known limitations](#known-limitations)) — restart it.
+
+**Apply reported success but the pointer still looks the same**
+Move the mouse — Hyprland sometimes only redraws the visible pointer on the next motion event, not the instant `hyprctl setcursor` runs (see [Known limitations](#known-limitations)). You can confirm the change actually took effect independently of what's on screen with `gsettings get org.gnome.desktop.interface cursor-theme`.
+
+**Escape/keybindings didn't close the overlay in an older build of this plugin**
+Fixed: earlier versions gave the theme grid its own real keyboard focus, which made it a focus *sibling* of the Escape handler rather than a descendant, so Escape was silently dropped whenever the grid (or a button) held focus. All keyboard handling now runs through a single owner for exactly this reason — see the comment above `focusZone` in `Main.qml`.
 
 **Debugging**
 Every `bin/omarchy-cursor-changer-*` script can be run directly from a terminal and prints JSON or a clear error to stdout/stderr — this is the fastest way to isolate whether an issue is in discovery/parsing/preview/apply or in the UI layer on top of it.

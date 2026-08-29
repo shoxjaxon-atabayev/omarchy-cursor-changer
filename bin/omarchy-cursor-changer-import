@@ -1,0 +1,101 @@
+#!/bin/bash
+
+# Import a cursor theme you already downloaded — a plain theme directory, or
+# an archive (.tar.gz/.tgz/.tar.xz/.tar.bz2/.tar/.zip) containing one — into
+# $XDG_DATA_HOME/icons so discovery picks it up like any other user theme.
+#
+# This is deliberately *not* a downloader: it never touches the network. It
+# only unpacks a file the user already has on disk (SPEC's non-goals rule
+# out an in-plugin marketplace/downloader, not "add the pack I already have").
+#
+# Usage: omarchy-cursor-changer-import <path-to-archive-or-directory>
+#
+# Archives are extracted into an isolated temp staging directory first, and
+# only the specific validated theme subdirectory found inside it is ever
+# copied to the real icons directory — an archive that tries to path-traverse
+# only pollutes its own throwaway temp dir, never the real one.
+
+set -uo pipefail
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+source "$ROOT/lib/common.sh"
+
+fail() {
+  echo "omarchy-cursor-changer-import: $*" >&2
+  exit 1
+}
+
+src="${1:-}"
+[[ -n $src && -e $src ]] || fail "no such file or directory: ${1:-<none>}"
+
+xdg_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+dest_root="$xdg_data_home/icons"
+mkdir -p "$dest_root"
+
+stage=""
+cleanup() { [[ -n $stage && -d $stage ]] && rm -rf "$stage"; }
+trap cleanup EXIT
+
+# Find a real cursor theme directory within a few levels of the given root.
+# Real downloaded packs commonly wrap the actual theme in one or more extra
+# folders (a README/screenshots directory, a version-numbered release
+# folder, sometimes both at once — e.g. Pack/Pack/cursors/), so this checks
+# the root itself first, then searches down to a bounded depth for the
+# *shallowest* directory containing cursors/, rather than assuming exactly
+# zero or one levels of nesting.
+find_theme_dir() {
+  local search_root="$1"
+  if ccx_has_cursors "$search_root"; then
+    printf '%s\n' "$search_root"
+    return 0
+  fi
+
+  local best="" best_depth=999999 dir depth
+  while IFS= read -r -d '' dir; do
+    dir=${dir%/cursors}
+    ccx_has_cursors "$dir" || continue
+    depth=$(tr -dc '/' <<<"${dir#"$search_root"}" | wc -c)
+    if (( depth < best_depth )); then
+      best="$dir"
+      best_depth=$depth
+    fi
+  done < <(find "$search_root" -mindepth 1 -maxdepth 5 -type d -iname cursors -print0 2>/dev/null)
+
+  [[ -n $best ]] || return 1
+  printf '%s\n' "$best"
+}
+
+if [[ -d $src ]]; then
+  theme_dir=$(find_theme_dir "$src") || fail "no cursor theme found in: $src (expected a cursors/ subdirectory)"
+else
+  stage=$(mktemp -d)
+  case "$src" in
+    *.tar.gz | *.tgz) tar -xzf "$src" --no-same-owner -C "$stage" ;;
+    *.tar.xz) tar -xJf "$src" --no-same-owner -C "$stage" ;;
+    *.tar.bz2) tar -xjf "$src" --no-same-owner -C "$stage" ;;
+    *.tar) tar -xf "$src" --no-same-owner -C "$stage" ;;
+    *.zip)
+      command -v unzip >/dev/null || fail "unzip is not installed; install it to import .zip archives"
+      unzip -q "$src" -d "$stage"
+      ;;
+    *) fail "unrecognized archive type: $src (expected .tar.gz/.tgz/.tar.xz/.tar.bz2/.tar/.zip, or a plain directory)" ;;
+  esac
+  [[ $? -eq 0 ]] || fail "failed to extract: $src"
+  theme_dir=$(find_theme_dir "$stage") || fail "no cursor theme found inside: $src (expected a cursors/ subdirectory)"
+fi
+
+name=$(ccx_theme_name_from_index "$theme_dir/index.theme")
+[[ -n $name ]] || name=${theme_dir##*/}
+# Keep the name filesystem-safe and unambiguous — it becomes a directory
+# name under $XDG_DATA_HOME/icons.
+safe_name=$(printf '%s' "$name" | tr -c 'A-Za-z0-9._-' '-')
+[[ -n $safe_name ]] || fail "theme name resolves to nothing usable: $name"
+
+dest="$dest_root/$safe_name"
+if [[ -e $dest ]]; then
+  fail "a theme named '$safe_name' already exists at $dest; remove it first or rename the source before importing"
+fi
+
+cp -a "$theme_dir" "$dest" || fail "failed to copy theme into: $dest"
+
+jq -n --arg name "$safe_name" --arg dir "$dest" '{imported: true, name: $name, dir: $dir}'

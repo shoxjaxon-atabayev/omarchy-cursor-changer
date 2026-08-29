@@ -25,6 +25,32 @@ Item {
   property bool isApplying: false
   property string applyError: ""
   property bool applySuccess: false
+  property bool isImporting: false
+  property string importError: ""
+
+  // Keyboard "cursor": which logical control (the grid, Cancel, or Apply)
+  // reacts to Enter/Space right now. keyCatcher below is the *only* item
+  // that ever holds real Qt keyboard focus — GridView and the two Buttons
+  // are driven programmatically from here instead of taking real focus
+  // themselves. This is deliberate, not a simplification: letting a child
+  // (GridView, a Button) grab real activeFocus made it a focus *sibling* of
+  // keyCatcher rather than a descendant, so unhandled keys (Escape, in
+  // particular) had nowhere to bubble to and were silently dropped.
+  property string focusZone: "grid" // "import" | "grid" | "cancel" | "apply"
+
+  function cycleFocus(direction) {
+    var zones = ["import", "grid", "cancel", "apply"]
+    var idx = zones.indexOf(root.focusZone)
+    if (idx < 0) idx = 0
+    var applyEnabled = root.hasChange && !root.isApplying
+    for (var i = 0; i < zones.length; i++) {
+      idx = (idx + direction + zones.length) % zones.length
+      if (zones[idx] === "apply" && !applyEnabled) continue
+      if (zones[idx] === "import" && root.isImporting) continue
+      root.focusZone = zones[idx]
+      return
+    }
+  }
 
   readonly property var sortedThemes: Model.sortThemes(root.themes, root.activeThemeId)
   readonly property bool hasChange: root.selectedThemeId !== "" && root.selectedThemeId !== root.activeThemeId
@@ -39,9 +65,11 @@ Item {
     root.opened = true
     root.applyError = ""
     root.applySuccess = false
+    root.importError = ""
+    root.focusZone = "grid"
     refreshState()
     if (!root.themesLoaded) discoverProc.running = true
-    Qt.callLater(function() { if (root.opened) gridView.forceActiveFocus() })
+    Qt.callLater(function() { if (root.opened) keyCatcher.forceActiveFocus() })
   }
 
   function close() {
@@ -70,6 +98,14 @@ Item {
     root.close()
   }
 
+  function importTheme() {
+    if (root.isImporting) return
+    root.isImporting = true
+    root.importError = ""
+    importProc.command = [root.binPath("omarchy-cursor-changer-import-pick")]
+    importProc.running = true
+  }
+
   function applySelected() {
     if (root.isApplying || !root.hasChange) return
     root.isApplying = true
@@ -92,6 +128,10 @@ Item {
         root.loading = false
         root.themes = finalExitCode === 0 ? Model.parseJsonArray(stdoutText) : []
         root.themesLoaded = true
+        if (root.pendingSelectId !== "") {
+          root.selectTheme(root.pendingSelectId)
+          root.pendingSelectId = ""
+        }
       }
     }
 
@@ -149,6 +189,66 @@ Item {
       stateProc.finalExitCode = exitCode
       stateProc.exited = true
       stateProc.checkFinished()
+    }
+  }
+
+  // Rescanned after a successful import so the new theme shows up without
+  // waiting for the next full open(); pendingSelectId carries the freshly
+  // imported theme's id across that async rescan so it lands pre-selected.
+  property string pendingSelectId: ""
+
+  Process {
+    id: importProc
+    property bool exited: false
+    property bool stdoutFinished: false
+    property bool stderrFinished: false
+    property int finalExitCode: -1
+    property string stdoutText: ""
+    property string stderrText: ""
+
+    function checkFinished() {
+      if (exited && stdoutFinished && stderrFinished) {
+        root.isImporting = false
+        if (finalExitCode === 0) {
+          var result = Model.parseJsonObject(stdoutText)
+          if (result.imported) {
+            root.pendingSelectId = result.name || ""
+            root.themesLoaded = false
+            discoverProc.running = true
+          }
+        } else if (stderrText.trim() !== "") {
+          // A blank stderr on failure means the user simply closed the file
+          // picker without choosing anything — not an error worth surfacing.
+          root.importError = "Couldn't import cursor theme: " + stderrText.trim().split("\n").pop()
+          console.warn("omarchy-cursor-changer: import failed:", stderrText)
+        }
+      }
+    }
+
+    onRunningChanged: if (running) {
+      exited = false; stdoutFinished = false; stderrFinished = false; finalExitCode = -1
+      stdoutText = ""; stderrText = ""
+    }
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        importProc.stdoutText = text
+        importProc.stdoutFinished = true
+        importProc.checkFinished()
+      }
+    }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        importProc.stderrText = text
+        importProc.stderrFinished = true
+        importProc.checkFinished()
+      }
+    }
+    onExited: function(exitCode) {
+      importProc.finalExitCode = exitCode
+      importProc.exited = true
+      importProc.checkFinished()
     }
   }
 
@@ -240,6 +340,48 @@ Item {
           if (event.key === Qt.Key_Escape) {
             root.cancel()
             event.accepted = true
+            return
+          }
+          if (event.key === Qt.Key_Tab) {
+            root.cycleFocus(event.modifiers & Qt.ShiftModifier ? -1 : 1)
+            event.accepted = true
+            return
+          }
+          if (event.key === Qt.Key_Backtab) {
+            root.cycleFocus(-1)
+            event.accepted = true
+            return
+          }
+
+          if (root.focusZone === "import") {
+            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+              root.importTheme()
+              event.accepted = true
+              return
+            }
+          } else if (root.focusZone === "grid") {
+            if (event.key === Qt.Key_Left) { gridView.moveCurrentIndexLeft(); event.accepted = true; return }
+            if (event.key === Qt.Key_Right) { gridView.moveCurrentIndexRight(); event.accepted = true; return }
+            if (event.key === Qt.Key_Up) { gridView.moveCurrentIndexUp(); event.accepted = true; return }
+            if (event.key === Qt.Key_Down) { gridView.moveCurrentIndexDown(); event.accepted = true; return }
+            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+              var idx = gridView.currentIndex
+              if (idx >= 0 && idx < root.sortedThemes.length) root.selectTheme(root.sortedThemes[idx].id)
+              event.accepted = true
+              return
+            }
+          } else if (root.focusZone === "cancel") {
+            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+              root.cancel()
+              event.accepted = true
+              return
+            }
+          } else if (root.focusZone === "apply") {
+            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+              root.applySelected()
+              event.accepted = true
+              return
+            }
           }
         }
       }
@@ -253,24 +395,45 @@ Item {
         anchors.leftMargin: card.contentLeftInset
         spacing: Style.spacing.lg
 
-        Column {
+        Item {
           id: header
           width: parent.width
-          spacing: Style.spacing.xxs
+          height: headerLabels.height
 
-          Text {
-            text: "Cursor"
-            color: Color.menu.text
-            font.family: Style.font.family
-            font.pixelSize: Style.font.display
-            font.bold: true
+          Column {
+            id: headerLabels
+            width: parent.width - importLink.width - Style.spacing.md
+            spacing: Style.spacing.xxs
+
+            Text {
+              text: "Cursor"
+              color: Color.menu.text
+              font.family: Style.font.family
+              font.pixelSize: Style.font.display
+              font.bold: true
+            }
+            Text {
+              text: "Choose a cursor style for your desktop"
+              color: Color.menu.text
+              opacity: 0.65
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body
+            }
           }
-          Text {
-            text: "Choose a cursor style for your desktop"
-            color: Color.menu.text
-            opacity: 0.65
-            font.family: Style.font.family
-            font.pixelSize: Style.font.body
+
+          // Secondary, deliberately understated action: importing a theme
+          // the user already downloaded is not the primary flow (SPEC §9
+          // keeps the header free of clutter), but it needs to be reachable
+          // without waiting for the grid to be empty.
+          Button {
+            id: importLink
+            anchors.right: parent.right
+            anchors.verticalCenter: headerLabels.verticalCenter
+            text: root.isImporting ? "Importing…" : "Import…"
+            fontSize: Style.font.bodySmall
+            hasCursor: root.focusZone === "import"
+            enabled: !root.isImporting
+            onClicked: { root.focusZone = "import"; root.importTheme() }
           }
         }
 
@@ -311,6 +474,13 @@ Item {
               font.family: Style.font.family
               font.pixelSize: Style.font.body
             }
+            Button {
+              anchors.horizontalCenter: parent.horizontalCenter
+              text: root.isImporting ? "Importing…" : "Import a cursor theme…"
+              bordered: true
+              enabled: !root.isImporting
+              onClicked: { root.focusZone = "import"; root.importTheme() }
+            }
           }
 
           GridView {
@@ -318,20 +488,11 @@ Item {
             visible: root.themes.length > 0
             anchors.fill: parent
             clip: true
-            focus: true
             cellWidth: width / Model.columnsForWidth(width)
             cellHeight: Style.space(168)
             model: root.sortedThemes
             currentIndex: 0
             highlight: null
-
-            Keys.onPressed: function(event) {
-              if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
-                if (currentIndex >= 0 && currentIndex < root.sortedThemes.length)
-                  root.selectTheme(root.sortedThemes[currentIndex].id)
-                event.accepted = true
-              }
-            }
 
             delegate: Item {
               width: gridView.cellWidth
@@ -346,9 +507,10 @@ Item {
                 themeDir: modelData.dir
                 active: modelData.id === root.activeThemeId
                 selected: modelData.id === root.selectedThemeId
-                highlighted: index === gridView.currentIndex
+                highlighted: index === gridView.currentIndex && root.focusZone === "grid"
                 onActivated: {
                   gridView.currentIndex = index
+                  root.focusZone = "grid"
                   root.selectTheme(modelData.id)
                 }
               }
@@ -358,9 +520,10 @@ Item {
 
         Text {
           id: errorText
-          visible: root.applyError !== ""
+          readonly property string message: root.applyError !== "" ? root.applyError : root.importError
+          visible: message !== ""
           width: parent.width
-          text: root.applyError
+          text: message
           color: Color.urgent
           font.family: Style.font.family
           font.pixelSize: Style.font.bodySmall
@@ -374,18 +537,18 @@ Item {
 
           Button {
             text: "Cancel"
-            focusable: true
             bordered: true
-            onClicked: root.cancel()
+            hasCursor: root.focusZone === "cancel"
+            onClicked: { root.focusZone = "cancel"; root.cancel() }
           }
 
           Button {
             text: root.isApplying ? "Applying…" : (root.applySuccess ? "Applied ✓" : "Apply")
-            focusable: true
             bordered: true
+            hasCursor: root.focusZone === "apply"
             enabled: root.hasChange && !root.isApplying
             opacity: enabled ? 1.0 : 0.45
-            onClicked: root.applySelected()
+            onClicked: { root.focusZone = "apply"; root.applySelected() }
           }
         }
       }

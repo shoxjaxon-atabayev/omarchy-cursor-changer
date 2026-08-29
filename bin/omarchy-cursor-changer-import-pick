@@ -1,0 +1,18 @@
+#!/bin/bash
+
+# Open the desktop file chooser for a cursor theme archive (or directory)
+# and import whatever the user picks. Exits silently (no output) with the
+# file chooser's own exit code if the user cancels — that's not an error,
+# just nothing to do.
+#
+# Usage: omarchy-cursor-changer-import-pick
+
+set -uo pipefail
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+
+picked=$(omarchy-file-select --title "Import a cursor theme" --extensions "tar gz tgz xz zip")
+status=$?
+[[ $status -eq 0 && -n $picked ]] || exit "$status"
+
+exec "$ROOT/omarchy-cursor-changer-import" "$picked"
